@@ -72,7 +72,7 @@ export const ChatList: FC = () => {
                             <ChatListItem
                                 id={id}
                                 header={convo.title}
-                                timestamp={convo.lastUpdatedTimestamp ?? messages[lastMessage].timestamp}
+                                timestamp={messages[lastMessage].timestamp}
                                 preview={
                                     messages.length > 0
                                         ? isPlan(messages[lastMessage].content)
