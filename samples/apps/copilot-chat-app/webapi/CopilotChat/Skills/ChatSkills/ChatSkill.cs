@@ -133,6 +133,60 @@ public class ChatSkill
     }
 
     /// <summary>
+    /// Extract the list of participants from the conversation history.
+    /// </summary>
+    [SKFunction("Extract chat participant list")]
+    [SKFunctionName("ExtractChatParticipantList")]
+    [SKFunctionContextParameter(Name = "chatId", Description = "Chat ID to extract history from")]
+    public async Task<string> ExtractChatParticipantListAsync(SKContext context)
+    {
+        var chatHistory = await this.ExtractChatHistoryLastNTokensAsync(context, 1000);
+        chatHistory = chatHistory + this._promptOptions.MemoryAntiHallucination;
+
+        var tokenLimit = this._promptOptions.CompletionTokenLimit;
+        var historyTokenBudget =
+            tokenLimit -
+            this._promptOptions.ResponseTokenLimit -
+            Utilities.TokenCount(string.Join("\n", new string[]
+                {
+                    this._promptOptions.SystemDescription,
+                    this._promptOptions.MemoryAntiHallucination,
+                    chatHistory,
+                    this._promptOptions.SystemIntentForParticipantList
+                })
+            );
+
+        var prompt = $"{this._promptOptions.SystemIntentForParticipantList}\n{chatHistory}";
+
+        // Clone the context to avoid modifying the original context variables.
+        var intentExtractionContext = Utilities.CopyContextWithVariablesClone(context);
+        intentExtractionContext.Variables.Set("userIntent", prompt);
+        intentExtractionContext.Variables.Set("tokenLimit", historyTokenBudget.ToString(new NumberFormatInfo()));
+        intentExtractionContext.Variables.Set("knowledgeCutoff", this._promptOptions.KnowledgeCutoffDate);
+        intentExtractionContext.Variables.Set("chatHistory", chatHistory);
+
+        var completionFunction = this._kernel.CreateSemanticFunction(
+            prompt,
+            skillName: nameof(ChatSkill),
+            description: "Complete the prompt.");
+
+        var result = await completionFunction.InvokeAsync(
+            intentExtractionContext,
+            settings: this.CreateIntentCompletionSettings()
+        );
+
+        if (result.ErrorOccurred)
+        {
+            context.Log.LogError("{0}: {1}", result.LastErrorDescription, result.LastException);
+            context.Fail(result.LastErrorDescription);
+            return string.Empty;
+        }
+
+        return $"Chat Participants: {result}";
+    }
+
+
+    /// <summary>
     /// Extract relevant memories based on the latest message.
     /// </summary>
     /// <param name="context">Contains the 'tokenLimit' and the 'contextTokenLimit' controlling the length of the prompt.</param>
@@ -288,15 +342,7 @@ public class ChatSkill
         return string.Empty;
     }
 
-    /// <summary>
-    /// Extract chat history.
-    /// </summary>
-    /// <param name="context">Contains the 'tokenLimit' controlling the length of the prompt.</param>
-    [SKFunction("Extract chat history")]
-    [SKFunctionName("ExtractChatHistory")]
-    [SKFunctionContextParameter(Name = "chatId", Description = "Chat ID to extract history from")]
-    [SKFunctionContextParameter(Name = "tokenLimit", Description = "Maximum number of tokens")]
-    public async Task<string> ExtractChatHistoryAsync(SKContext context)
+    private async Task<string> ExtractChatHistoryLastNTokensAsync(SKContext context, int tokensToUse = 0)
     {
         var chatId = context["chatId"];
         var tokenLimit = int.Parse(context["tokenLimit"], new NumberFormatInfo());
@@ -304,7 +350,8 @@ public class ChatSkill
         var messages = await this._chatMessageRepository.FindByChatIdAsync(chatId);
         var sortedMessages = messages.OrderByDescending(m => m.Timestamp);
 
-        var remainingToken = tokenLimit;
+        var remainingToken = tokensToUse > tokenLimit ? tokensToUse : tokenLimit;
+
         string historyText = "";
         foreach (var chatMessage in sortedMessages)
         {
@@ -324,6 +371,19 @@ public class ChatSkill
         }
 
         return $"Chat history:\n{historyText.Trim()}";
+    }
+
+    /// <summary>
+    /// Extract chat history.
+    /// </summary>
+    /// <param name="context">Contains the 'tokenLimit' controlling the length of the prompt.</param>
+    [SKFunction("Extract chat history")]
+    [SKFunctionName("ExtractChatHistory")]
+    [SKFunctionContextParameter(Name = "chatId", Description = "Chat ID to extract history from")]
+    [SKFunctionContextParameter(Name = "tokenLimit", Description = "Maximum number of tokens")]
+    public async Task<string> ExtractChatHistoryAsync(SKContext context)
+    {
+        return await this.ExtractChatHistoryLastNTokensAsync(context, 0);
     }
 
     /// <summary>
